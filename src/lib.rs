@@ -107,15 +107,10 @@ where
         Ok(0) => Ok(None), // EOF encountered
         Ok(_) => {
             let trimmed_input = input.trim_end_matches('\r').trim_end_matches('\n');
-            if trimmed_input.is_empty() && input.ends_with('\n') {
-                // Consider an empty line as EOF, returning None
-                Ok(None)
-            } else {
-                trimmed_input
-                    .parse::<T>()
-                    .map(Some)
-                    .map_err(InputError::Parse)
-            }
+            trimmed_input
+                .parse::<T>()
+                .map(Some)
+                .map_err(InputError::Parse)
         }
         Err(e) => Err(InputError::Io(e)),
     }
