@@ -1,3 +1,4 @@
+use std::fmt::Arguments;
 use std::io::{self, BufRead, Write};
 use std::str::FromStr;
 
@@ -47,7 +48,7 @@ impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for InputError<E>
 /// let value: i32 = read_and_parse_from(&mut reader, None).unwrap();
 /// assert_eq!(value, 42);
 /// ```
-fn read_and_parse_from<R, T>(reader: &mut R, prompt: Option<&str>) -> Result<T, InputError<T::Err>>
+pub fn read_and_parse_from<R, T>(reader: &mut R, prompt: Option<&str>) -> Result<T, InputError<T::Err>>
 where
     R: BufRead,
     T: FromStr,
@@ -88,9 +89,9 @@ where
 /// let value: Option<i32> = read_and_parse_with_eof_from(&mut reader, None).unwrap();
 /// assert!(value.is_none());
 /// ```
-fn read_and_parse_with_eof_from<R, T>(
+pub fn read_and_parse_with_eof_from<R, T>(
     reader: &mut R,
-    prompt: Option<&str>,
+    prompt: Option<Arguments>,
 ) -> Result<Option<T>, InputError<T::Err>>
 where
     R: BufRead,
@@ -220,7 +221,7 @@ where
 /// }
 /// ```
 pub fn read_and_parse_with_prompt_eof<T: FromStr>(
-    prompt: &str,
+    prompt: Arguments<'_>,
 ) -> Result<Option<T>, InputError<T::Err>>
 where
     T::Err: std::fmt::Debug + std::fmt::Display,
@@ -243,19 +244,24 @@ where
 /// # Examples
 ///
 /// ```no_run
+/// use input_macro::input;
 /// // With no prompt
 /// let name: Option<String> = input!().unwrap();
 ///
 /// // With a prompt
 /// let age: Option<i32> = input!("Enter your age: ").unwrap();
+/// 
+/// // With a prompt formatted with arguments
+/// let name = "Alice";
+/// let age: Option<i32> = input!("Enter the age of {}: ", name).unwrap();
 /// ```
 #[macro_export]
 macro_rules! input {
     () => {
         $crate::read_and_parse_with_eof::<String>()
     };
-    ($prompt:expr) => {
-        $crate::read_and_parse_with_eof_from(&mut ::std::io::stdin().lock(), Some($prompt))
+    ($($arg:tt)*) => {
+        $crate::read_and_parse_with_eof_from(&mut ::std::io::stdin().lock(), Some(format_args!($($arg)*)))
     };
 }
 
@@ -282,8 +288,8 @@ macro_rules! input_no_eof {
     () => {
         $crate::read_and_parse::<String>()
     };
-    ($prompt:expr) => {
-        $crate::read_and_parse_from(&mut ::std::io::stdin().lock(), Some($prompt))
+    ($($arg:tt)*) => {
+        $crate::read_and_parse_from(&mut ::std::io::stdin().lock(), Some(format_args!($($prompt)*)))
     };
 }
 
