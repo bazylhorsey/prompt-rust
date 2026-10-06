@@ -1,206 +1,232 @@
-use std::fmt::Arguments;
+use std::error::Error;
+use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::str::FromStr;
 
-/// A unified error type indicating either an I/O error, a parse error, or EOF.
+/// Why reading input failed.
 #[derive(Debug)]
 pub enum InputError<E> {
-    /// An I/O error occurred (e.g., closed stdin).
+    /// Reading stdin or writing the prompt failed.
     Io(io::Error),
-    /// Failed to parse the input into the desired type.
+    /// The line could not be parsed into the requested type.
     Parse(E),
-    /// EOF encountered (read_line returned 0).
+    /// Input ended before a line was read (where Python raises `EOFError`).
     Eof,
 }
 
-impl<E: std::fmt::Display + std::fmt::Debug> std::fmt::Display for InputError<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<E: fmt::Display> fmt::Display for InputError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            InputError::Io(e) => write!(f, "I/O error: {}", e),
-            InputError::Parse(e) => write!(f, "Parse error: {}", e),
-            InputError::Eof => write!(f, "EOF encountered"),
+            // The io::Error is exposed through `source()`, so it isn't repeated here.
+            InputError::Io(_) => f.write_str("I/O error while getting input"),
+            InputError::Parse(err) => write!(f, "failed to parse input: {err}"),
+            InputError::Eof => f.write_str("unexpected end of input"),
         }
     }
 }
 
-impl<E: std::fmt::Display + std::fmt::Debug> std::error::Error for InputError<E> {}
+impl<E: fmt::Display + fmt::Debug> Error for InputError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            InputError::Io(err) => Some(err),
+            InputError::Parse(_) | InputError::Eof => None,
+        }
+    }
+}
 
-/// A single function that:
-/// 1. Optionally prints a prompt (and flushes).
-/// 2. Reads one line from the provided `BufRead`.
-/// 3. Returns `Err(InputError::Eof)` if EOF is reached.
-/// 4. Parses into type `T`, returning `Err(InputError::Parse)` on failure.
-/// 5. Returns `Err(InputError::Io)` on I/O failure.
-pub fn read_input_from<R, T>(
+/// Writes `prompt` (if any) to `writer`, then reads one line from `reader` and parses it.
+///
+/// The writer is always flushed before reading. The trailing `\n` or `\r\n` is removed.
+/// If the line doesn't parse as-is, it is trimmed and parsed once more, so `" 42 "`
+/// reads as `42` while a `String` keeps its spaces.
+pub fn read_input_from<R, W, T>(
     reader: &mut R,
-    prompt: Option<Arguments<'_>>,
+    writer: &mut W,
+    prompt: Option<fmt::Arguments<'_>>,
 ) -> Result<T, InputError<T::Err>>
 where
-    R: BufRead,
+    R: BufRead + ?Sized,
+    W: Write + ?Sized,
     T: FromStr,
-    T::Err: std::fmt::Display + std::fmt::Debug,
 {
-    if let Some(prompt_args) = prompt {
-        print!("{}", prompt_args);
-        // Always flush so the user sees the prompt immediately
-        io::stdout().flush().map_err(InputError::Io)?;
+    write_prompt(writer, prompt)?;
+    read_line_parsed(reader)
+}
+
+/// Reads one line from stdin and parses it, without a prompt.
+///
+/// Stdout is flushed first, so text from `print!` shows up before the read.
+///
+/// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// print!("Guess a number: ");
+/// let guess: u32 = input_macro::read_input()?;
+/// # Ok(())
+/// # }
+/// ```
+pub fn read_input<T: FromStr>() -> Result<T, InputError<T::Err>> {
+    __read_stdin(None)
+}
+
+#[doc(hidden)]
+pub fn __read_stdin<T: FromStr>(
+    prompt: Option<fmt::Arguments<'_>>,
+) -> Result<T, InputError<T::Err>> {
+    // Write the prompt before locking stdin, so we never hold both locks at once.
+    write_prompt(&mut io::stdout(), prompt)?;
+    read_line_parsed(&mut io::stdin().lock())
+}
+
+fn write_prompt<W: Write + ?Sized, E>(
+    writer: &mut W,
+    prompt: Option<fmt::Arguments<'_>>,
+) -> Result<(), InputError<E>> {
+    if let Some(prompt) = prompt {
+        writer.write_fmt(prompt).map_err(InputError::Io)?;
     }
+    writer.flush().map_err(InputError::Io)
+}
 
-    let mut input = String::new();
-    let bytes_read = reader.read_line(&mut input).map_err(InputError::Io)?;
-
-    // If 0, that's EOF — return Eof error
-    if bytes_read == 0 {
+fn read_line_parsed<R: BufRead + ?Sized, T: FromStr>(
+    reader: &mut R,
+) -> Result<T, InputError<T::Err>> {
+    let mut line = String::new();
+    if reader.read_line(&mut line).map_err(InputError::Io)? == 0 {
         return Err(InputError::Eof);
     }
-
-    let trimmed = input.trim_end_matches(['\r', '\n'].as_ref());
-    trimmed.parse::<T>().map_err(InputError::Parse)
+    let line = line.strip_suffix('\n').unwrap_or(&line);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    line.parse()
+        .or_else(|err| match line.trim() {
+            trimmed if trimmed.len() < line.len() => trimmed.parse(),
+            _ => Err(err),
+        })
+        .map_err(InputError::Parse)
 }
 
-/// A convenience wrapper that reads from stdin (locking it), without printing a prompt.
-pub fn read_input<T>() -> Result<T, InputError<T::Err>>
-where
-    T: FromStr,
-    T::Err: std::fmt::Display + std::fmt::Debug,
-{
-    let stdin = io::stdin();
-    let mut locked = stdin.lock();
-    read_input_from(&mut locked, None)
-}
-
-/// A convenience wrapper that reads from stdin, printing the given prompt first.
-pub fn read_input_with_prompt<T>(prompt: Arguments<'_>) -> Result<T, InputError<T::Err>>
-where
-    T: FromStr,
-    T::Err: std::fmt::Display + std::fmt::Debug,
-{
-    let stdin = io::stdin();
-    let mut locked = stdin.lock();
-    read_input_from(&mut locked, Some(prompt))
-}
-
-/// A macro that:
-/// - reads **one line** from stdin (as `String` by default),
-/// - returns `Ok(None)` if EOF is encountered (`InputError::Eof`).
+/// Reads one line from stdin and parses it into the type you ask for,
+/// printing an optional prompt first.
 ///
-/// # Usage:
+/// End of input is an error (`InputError::Eof`), like Python's `EOFError`.
+/// The prompt can be a format string (inline `{name}` captures work) or any
+/// value that implements `Display`.
+///
 /// ```no_run
-/// // No prompt
-/// let text: Option<String> = input!().unwrap();
+/// use input_macro::input;
 ///
-/// // With prompt
-/// let name: Option<String> = input!("Enter your name: ").unwrap();
-///
-/// // Formatted prompt
-/// let user = "Alice";
-/// let age: Option<String> = input!("Enter {}'s age: ", user).unwrap();
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let name: String = input!("Name: ")?;
+/// let age: u8 = input!("Hi {name}, how old are you? ")?;
+/// let question = format!("{name}, pick a number: ");
+/// let pick: i64 = input!(question)?;
+/// let line: String = input!()?; // no prompt
+/// # Ok(())
+/// # }
 /// ```
 #[macro_export]
 macro_rules! input {
-    () => {{
-        // If you'd like a different type, just replace <String> below:
-        match $crate::read_input_from(&mut ::std::io::stdin().lock(), None) {
-            Ok(val) => Ok(Some(val)),
-            Err($crate::InputError::Eof) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }};
-    ($($arg:tt)*) => {{
-        match $crate::read_input_from(
-            &mut ::std::io::stdin().lock(),
-            Some(format_args!($($arg)*))
-        ) {
-            Ok(val) => Ok(Some(val)),
-            Err($crate::InputError::Eof) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }};
+    () => {
+        $crate::read_input()
+    };
+    ($($prompt:tt)+) => {
+        $crate::__read_stdin(::core::option::Option::Some($crate::__prompt!($($prompt)+)))
+    };
 }
 
-/// A macro that:
-/// - prints the prompt on its own line (with `println!`),
-/// - then reads one line,
-/// - returns `Ok(None)` on EOF,
-/// - otherwise parses into `String`.
+/// Like [`input!`], but prints the prompt on its own line.
 ///
-/// # Usage:
 /// ```no_run
-/// let line: Option<String> = inputln!("What's your favorite color?").unwrap();
+/// use input_macro::inputln;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let color: String = inputln!("What's your favorite color?")?;
+/// # Ok(())
+/// # }
 /// ```
 #[macro_export]
 macro_rules! inputln {
-    () => {{
-        match $crate::read_input_from(&mut ::std::io::stdin().lock(), None) {
-            Ok(val) => Ok(Some(val)),
-            Err($crate::InputError::Eof) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }};
-    ($($arg:tt)*) => {{
-        println!("{}", format_args!($($arg)*));
-        ::std::io::Write::flush(&mut ::std::io::stdout()).unwrap();
-        match $crate::read_input_from(&mut ::std::io::stdin().lock(), None) {
-            Ok(val) => Ok(Some(val)),
-            Err($crate::InputError::Eof) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }};
+    () => {
+        $crate::read_input()
+    };
+    ($($prompt:tt)+) => {
+        $crate::__read_stdin(::core::option::Option::Some(::core::format_args!(
+            "{}\n",
+            $crate::__prompt!($($prompt)+)
+        )))
+    };
 }
 
-/// A macro that:
-/// - reads one line from stdin,
-/// - tries to parse into `String`,
-/// - **treats EOF as an error** (no `Ok(None)`).
+/// Like [`input!`], but returns `Ok(None)` at end of input instead of an error.
 ///
-/// # Usage:
 /// ```no_run
-/// // No prompt
-/// let line: String = input_no_eof!().unwrap();
+/// use input_macro::try_input;
 ///
-/// // With prompt
-/// let age: i32 = input_no_eof!("Enter your age: ").unwrap();
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut numbers: Vec<i64> = Vec::new();
+/// while let Some(n) = try_input!()? {
+///     numbers.push(n);
+/// }
+/// # Ok(())
+/// # }
 /// ```
 #[macro_export]
-macro_rules! input_no_eof {
-    () => {{
-        // If you want a different type, change <String> here:
-        $crate::read_input_from(&mut ::std::io::stdin().lock(), None)
-    }};
-    ($($arg:tt)*) => {{
-        $crate::read_input_from(
-            &mut ::std::io::stdin().lock(),
-            Some(format_args!($($arg)*))
-        )
-    }};
+macro_rules! try_input {
+    ($($prompt:tt)*) => {
+        match $crate::input!($($prompt)*) {
+            ::core::result::Result::Ok(value) => {
+                ::core::result::Result::Ok(::core::option::Option::Some(value))
+            }
+            ::core::result::Result::Err($crate::InputError::Eof) => {
+                ::core::result::Result::Ok(::core::option::Option::None)
+            }
+            ::core::result::Result::Err(err) => ::core::result::Result::Err(err),
+        }
+    };
+}
+
+/// Turns macro arguments into a prompt: a format string with arguments, or any `Display` value.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __prompt {
+    ($fmt:literal $($args:tt)*) => {
+        ::core::format_args!($fmt $($args)*)
+    };
+    ($prompt:expr $(,)?) => {
+        ::core::format_args!("{}", $prompt)
+    };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Cursor, Error, ErrorKind};
+    use std::io::{Cursor, Error as IoError, ErrorKind};
+
+    /// Reads one line with no prompt, discarding prompt output.
+    fn read<T: FromStr>(reader: &mut impl BufRead) -> Result<T, InputError<T::Err>> {
+        read_input_from(reader, &mut io::sink(), None)
+    }
 
     /// Basic test reading an integer
     #[test]
     fn test_read_input_integer() {
         let mut reader = Cursor::new("42\n");
-        let res: Result<i32, _> = read_input_from(&mut reader, None);
+        let res: Result<i32, _> = read(&mut reader);
         assert_eq!(res.unwrap(), 42);
     }
 
     /// Test reading a floating-point number
     #[test]
     fn test_read_input_float() {
-        let mut reader = Cursor::new("3.14159\n");
-        let res: Result<f64, _> = read_input_from(&mut reader, None);
-        assert!((res.unwrap() - 3.14159).abs() < f64::EPSILON);
+        let mut reader = Cursor::new("1.25\n");
+        let res: Result<f64, _> = read(&mut reader);
+        assert!((res.unwrap() - 1.25).abs() < f64::EPSILON);
     }
 
     /// Test reading an unsigned integer
     #[test]
     fn test_read_input_unsigned() {
         let mut reader = Cursor::new("255\n");
-        let res: Result<u32, _> = read_input_from(&mut reader, None);
+        let res: Result<u32, _> = read(&mut reader);
         assert_eq!(res.unwrap(), 255);
     }
 
@@ -208,7 +234,7 @@ mod tests {
     #[test]
     fn test_read_input_eof() {
         let mut reader = Cursor::new("");
-        let res: Result<i32, _> = read_input_from(&mut reader, None);
+        let res: Result<i32, _> = read(&mut reader);
         assert!(matches!(res, Err(InputError::Eof)));
     }
 
@@ -216,7 +242,7 @@ mod tests {
     #[test]
     fn test_read_input_parse_error() {
         let mut reader = Cursor::new("not an int\n");
-        let res: Result<i32, _> = read_input_from(&mut reader, None);
+        let res: Result<i32, _> = read(&mut reader);
         assert!(matches!(res, Err(InputError::Parse(_))));
     }
 
@@ -224,18 +250,19 @@ mod tests {
     #[test]
     fn test_read_input_string() {
         let mut reader = Cursor::new("hello world\r\n");
-        let res: Result<String, _> = read_input_from(&mut reader, None);
+        let res: Result<String, _> = read(&mut reader);
         assert_eq!(res.unwrap(), "hello world");
     }
 
-    /// Test with an explicit prompt passed as `format_args!`
+    /// The prompt goes to the writer, not straight to stdout
     #[test]
     fn test_with_prompt() {
         let mut reader = Cursor::new("100\n");
-        // Demonstrate passing "Enter: " as a &str with format_args!
-        let prompt = format_args!("Enter: ");
-        let res: Result<i32, _> = read_input_from(&mut reader, Some(prompt));
+        let mut out = Vec::new();
+        let res: Result<i32, _> =
+            read_input_from(&mut reader, &mut out, Some(format_args!("Enter: ")));
         assert_eq!(res.unwrap(), 100);
+        assert_eq!(out, b"Enter: ");
     }
 
     /// Multiple lines: read first line (valid), then second line (valid)
@@ -243,11 +270,11 @@ mod tests {
     fn test_multiple_lines_valid() {
         let mut reader = Cursor::new("123\n456\n");
         // Read first line
-        let first: i32 = read_input_from(&mut reader, None).unwrap();
+        let first: i32 = read(&mut reader).unwrap();
         assert_eq!(first, 123);
 
         // Read second line
-        let second: i32 = read_input_from(&mut reader, None).unwrap();
+        let second: i32 = read(&mut reader).unwrap();
         assert_eq!(second, 456);
     }
 
@@ -256,15 +283,15 @@ mod tests {
     fn test_multiple_lines_parse_error_then_eof() {
         let mut reader = Cursor::new("42\nnotanint\n");
         // Read first line
-        let first: i32 = read_input_from(&mut reader, None).unwrap();
+        let first: i32 = read(&mut reader).unwrap();
         assert_eq!(first, 42);
 
         // Read second line: parse error
-        let second = read_input_from::<_, i32>(&mut reader, None);
+        let second = read::<i32>(&mut reader);
         assert!(matches!(second, Err(InputError::Parse(_))));
 
         // Next read is EOF (because we've consumed all input)
-        let third = read_input_from::<_, i32>(&mut reader, None);
+        let third = read::<i32>(&mut reader);
         assert!(matches!(third, Err(InputError::Eof)));
     }
 
@@ -273,23 +300,62 @@ mod tests {
     #[test]
     fn test_empty_line_behavior() {
         let mut reader = Cursor::new("\n");
-        let res: Result<i32, _> = read_input_from(&mut reader, None);
+        let res: Result<i32, _> = read(&mut reader);
         // Typically this is a parse error, because "" can't parse into i32
         assert!(matches!(res, Err(InputError::Parse(_))));
     }
 
-    /// Test that macros compile and work as expected (this is a basic usage check).
-    /// We simulate a single line of input, then confirm `input!()` returns `Ok(Some(...))`.
+    /// Prompts accept format strings, inline captures, and plain `Display` values
     #[test]
-    fn test_input_macro() {
-        let mut reader = Cursor::new("HelloFromMacro\n");
-        // Because macros read from stdin, we can temporarily override stdin by locking,
-        // but to test here, we'll just manually call `read_input_from`.
-        // In a real scenario, you might do an integration test or skip macro tests in unit tests.
+    fn test_prompt_forms() {
+        let name = "Ada";
+        let question = String::from("Ready? ");
+        assert_eq!(crate::__prompt!("Hi {name}: ").to_string(), "Hi Ada: ");
+        assert_eq!(crate::__prompt!("{} + {} = ", 1, 2).to_string(), "1 + 2 = ");
+        assert_eq!(crate::__prompt!(question).to_string(), "Ready? ");
+        assert_eq!(crate::__prompt!(&question).to_string(), "Ready? ");
+    }
 
-        // Direct call for demonstration:
-        let result: Result<String, _> = read_input_from(&mut reader, None);
-        assert_eq!(result.unwrap(), "HelloFromMacro");
+    /// Numbers forgive surrounding spaces; strings keep them
+    #[test]
+    fn test_whitespace_around_numbers() {
+        let mut reader = Cursor::new(" 42 \r\n  keep  \n");
+        assert_eq!(read::<i32>(&mut reader).unwrap(), 42);
+        assert_eq!(read::<String>(&mut reader).unwrap(), "  keep  ");
+    }
+
+    /// A failing prompt write is returned as `InputError::Io` instead of panicking
+    #[test]
+    fn test_prompt_write_error() {
+        struct BrokenPipe;
+        impl Write for BrokenPipe {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(IoError::new(ErrorKind::BrokenPipe, "closed"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut reader = Cursor::new("1\n");
+        let res: Result<i32, _> =
+            read_input_from(&mut reader, &mut BrokenPipe, Some(format_args!("x")));
+        assert!(matches!(res, Err(InputError::Io(_))));
+    }
+
+    /// Each message appears once in an error chain (Display or source, never both)
+    #[test]
+    fn test_error_display_and_source() {
+        let parse = read::<i32>(&mut Cursor::new("x\n")).unwrap_err();
+        assert_eq!(
+            parse.to_string(),
+            "failed to parse input: invalid digit found in string"
+        );
+        assert!(parse.source().is_none());
+
+        let io = InputError::<std::num::ParseIntError>::Io(IoError::other("boom"));
+        assert_eq!(io.to_string(), "I/O error while getting input");
+        assert_eq!(io.source().unwrap().to_string(), "boom");
     }
 
     /// Check that a custom `Read` implementation that returns an error triggers `InputError::Io`.
@@ -300,7 +366,7 @@ mod tests {
         impl BufRead for ErrorReader {
             fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
                 // Force an I/O error
-                Err(Error::new(ErrorKind::Other, "Simulated I/O failure"))
+                Err(IoError::other("Simulated I/O failure"))
             }
             fn consume(&mut self, _amt: usize) {}
         }
@@ -308,12 +374,12 @@ mod tests {
         // We only need `read_line` to fail:
         impl std::io::Read for ErrorReader {
             fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-                Err(Error::new(ErrorKind::Other, "Simulated I/O failure"))
+                Err(IoError::other("Simulated I/O failure"))
             }
         }
 
         let mut reader = ErrorReader;
-        let res: Result<String, _> = read_input_from(&mut reader, None);
+        let res: Result<String, _> = read(&mut reader);
         assert!(matches!(res, Err(InputError::Io(_))));
     }
 }

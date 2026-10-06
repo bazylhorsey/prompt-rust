@@ -1,17 +1,13 @@
 [package]
 name = "prompt-rust"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.74"
 authors = ["Bazyl Horsey <bhorsey16@gmail.com>"]
-description = "A library providing a simple input macro for Rust, similar to Python's input()."
-license = "MIT" 
-repository = "https://github.com/bazylhorsey/prompt-rust" 
+description = "Python-style input!() for Rust: read a line from stdin and parse it into any FromStr type."
+license = "MIT"
+repository = "https://github.com/bazylhorsey/prompt-rust"
 keywords = ["input", "macro", "io", "stdin", "prompt"]
-categories = ["command-line-interface", "development-tools::testing"]
+categories = ["command-line-interface"]
 readme = "README.md"
 
-[lib]
-name = "input_macro"
-path = "src/lib.rs"
-
-[dev-dependencies]
