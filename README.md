@@ -1,4 +1,7 @@
 # prompt-rust
+[![crates.io](https://img.shields.io/crates/v/prompt-rust.svg)](https://crates.io/crates/prompt-rust)
+[![downloads](https://img.shields.io/crates/d/prompt-rust.svg)](https://crates.io/crates/prompt-rust)
+[![docs.rs](https://img.shields.io/docsrs/prompt-rust)](https://docs.rs/prompt-rust)
 
 Python's `input()` for Rust. Print a prompt, read a line from stdin, and parse it into any type that implements `FromStr`. No dependencies.
 
