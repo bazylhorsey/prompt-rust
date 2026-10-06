@@ -60,7 +60,7 @@ where
 /// ```no_run
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// print!("Guess a number: ");
-/// let guess: u32 = input_macro::read_input()?;
+/// let guess: u32 = prompt_rust::read_input()?;
 /// # Ok(())
 /// # }
 /// ```
@@ -112,7 +112,7 @@ fn read_line_parsed<R: BufRead + ?Sized, T: FromStr>(
 /// value that implements `Display`.
 ///
 /// ```no_run
-/// use input_macro::input;
+/// use prompt_rust::input;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let name: String = input!("Name: ")?;
@@ -136,7 +136,7 @@ macro_rules! input {
 /// Like [`input!`], but prints the prompt on its own line.
 ///
 /// ```no_run
-/// use input_macro::inputln;
+/// use prompt_rust::inputln;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let color: String = inputln!("What's your favorite color?")?;
@@ -159,7 +159,7 @@ macro_rules! inputln {
 /// Like [`input!`], but returns `Ok(None)` at end of input instead of an error.
 ///
 /// ```no_run
-/// use input_macro::try_input;
+/// use prompt_rust::try_input;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut numbers: Vec<i64> = Vec::new();
